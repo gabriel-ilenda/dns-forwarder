@@ -8,10 +8,7 @@ import argparse
 import dnslib
 from datetime import datetime
 
-# Default DoH server (Cloudflare)
 DEFAULT_DOH_SERVER = "https://1.1.1.1/dns-query"
-
-# DNS Server settings
 LISTEN_IP = "0.0.0.0"  
 LISTEN_PORT = 5353       
 
@@ -24,21 +21,24 @@ class DNSForwarder:
         self.deny_list = self.load_deny_list(deny_list_file)
 
     def load_deny_list(self, file_path):
-        """Load blocked domains from a file."""
-        if not file_path:
-            return set()
+        blocked_domains = set()
         try:
             with open(file_path, "r") as f:
-                return set(line.strip().lower() for line in f if line.strip())
+                for line in f:
+                    if line.strip():
+                        blocked_domains.add(line.strip())
+            print(f"Blocked domain include: {blocked_domains}")
+            return blocked_domains
         except FileNotFoundError:
             print(f"Warning: Deny list file '{file_path}' not found.")
+            print("No domains will be blocked.")
             return set()
 
     def log_query(self, domain, qtype, action):
-        """Log the DNS query outcome."""
         if not self.log_file:
             return
         with open(self.log_file, "a") as f:
+            # from chat, not sure if this is what he wants but it's a timestamp!!!!
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"{timestamp} {domain} {qtype} {action}\n")
 
