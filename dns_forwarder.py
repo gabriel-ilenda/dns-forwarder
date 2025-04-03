@@ -3,8 +3,10 @@
 import socket
 import threading
 import requests
+
 import base64
 import argparse
+
 import dnslib
 from datetime import datetime
 
@@ -18,33 +20,80 @@ class DNSForwarder:
         self.use_doh = use_doh
         self.doh_server = doh_server or DEFAULT_DOH_SERVER
         self.log_file = log_file
-        self.deny_list = self.load_deny_list(deny_list_file)
+        self.deny_list = self.block_domains(deny_list_file)
 
-    def load_deny_list(self, file_path):
+    def start(self):
+
+        # sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # while sock:
+        #     sock.bind(LISTEN_IP, LISTEN_PORT)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_sock:
+            server_sock.bind((LISTEN_IP, LISTEN_PORT))
+            print(f"RUNNING ON {LISTEN_IP}:{LISTEN_PORT}\n")
+
+            # can only be stopped with ctrl+c???? 
+            while True:
+                data, addr = server_sock.recvfrom(1024)
+                threading.Thread(target=self.handle_request, args=(data, addr, server_sock)).start()
+
+    def block_domains(self, file_path):
         blocked_domains = set()
         try:
             with open(file_path, "r") as f:
                 for line in f:
                     if line.strip():
+                        # no real error checking here, could block a random collection of stuff if you want
                         blocked_domains.add(line.strip())
-            print(f"Blocked domain include: {blocked_domains}")
+            print(f"\nBlocked domain include: {blocked_domains}\n")
             return blocked_domains
         except FileNotFoundError:
             print(f"Warning: Deny list file '{file_path}' not found.")
             print("No domains will be blocked.")
             return set()
 
-    def log_query(self, domain, qtype, action):
-        if not self.log_file:
-            return
-        with open(self.log_file, "a") as f:
-            # from chat, not sure if this is what he wants but it's a timestamp!!!!
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"{timestamp} {domain} {qtype} {action}\n")
+    def handle_request(self, data, addr, sock):
+        """Process incoming DNS queries."""
+        try:
+            query = dnslib.DNSRecord.parse(data)
+            
+            domain = str(query.q.qname).rstrip(".").lower()
+            
+            qtype = dnslib.QTYPE[query.q.qtype]
+
+            print(f"query = {query}")
+            print(f"domain = {domain}")
+            print(f"qtype = {qtype}")
+
+            if domain in self.deny_list:
+                print(f"Error! The following domain is blocked: {domain}")
+                self.log(domain, qtype, "DENY")
+                response = self.create_nxdomain_response(query)
+                sock.sendto(response, addr)
+                return
+
+            if self.use_doh:
+                response = self.forward_doh_query(data)
+            else:
+                response = self.forward_udp_query(data)
+
+            if response:
+                sock.sendto(response, addr)
+                print(f"Success! The following domain was queried: {domain}")
+                self.log(domain, qtype, "ALLOW")
+            else:
+                print(f"Error! The following domain was queried but no response was received: {domain}")
+
+        except Exception as e:
+            print(f"Error! {e}")
 
     def create_nxdomain_response(self, query):
-        """Create an NXDOMAIN response for blocked domains."""
+        
+        # chat recommended dnslib instead of scapy, works the same i think
+        # we already nx response is thrown if we're in this method so we just copy output here 
         response = dnslib.DNSRecord(dnslib.DNSHeader(id=query.header.id, qr=1, aa=1, ra=1, rcode=3))
+       
+        # chat again, it makes it look excatly like a normal dig output so
         response.add_question(query.q)
         return response.pack()
 
@@ -52,14 +101,20 @@ class DNSForwarder:
         """Forward the DNS query via UDP to the specified resolver."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(data, (self.dst_ip, 53))
-            response, _ = sock.recvfrom(512)
+            response, _ = sock.recvfrom(1024)
         return response
 
     def forward_doh_query(self, data):
-        """Forward the DNS query using DoH (GET request)."""
+        
+        # makes the query safe for http
         dns_query_base64 = base64.urlsafe_b64encode(data).decode().rstrip("=")
-        doh_url = f"{self.doh_server}?dns={dns_query_base64}"
+        
+
+        # ex: for google it was:
+        # https://1.1.1.1/dns-query?dns=xwkBIAABAAAAAAABA3d3dwZnb29nbGUDY29tAAABAAEAACkE0AAAAAAADAAKAAjc-DuOI4Qjmw
+        doh_url = f"https://{self.doh_server}/dns-query?dns={dns_query_base64}"
         headers = {"Accept": "application/dns-message"}
+        print(doh_url)
 
         try:
             response = requests.get(doh_url, headers=headers, timeout=5)
@@ -68,46 +123,15 @@ class DNSForwarder:
         except requests.RequestException as e:
             print(f"Error: DoH request failed - {e}")
         return None
-
-    def handle_request(self, data, addr, sock):
-        """Process incoming DNS queries."""
-        try:
-            query = dnslib.DNSRecord.parse(data)
-            domain = str(query.q.qname).rstrip(".").lower()
-            qtype = dnslib.QTYPE[query.q.qtype]
-
-            # Check if the domain is blocked
-            if domain in self.deny_list:
-                print(f"Blocked: {domain}")
-                self.log_query(domain, qtype, "DENY")
-                response = self.create_nxdomain_response(query)
-                sock.sendto(response, addr)
-                return
-
-            # Forward to upstream DNS resolver (DoH or standard UDP)
-            if self.use_doh:
-                response = self.forward_doh_query(data)
-            else:
-                response = self.forward_udp_query(data)
-
-            if response:
-                sock.sendto(response, addr)
-                self.log_query(domain, qtype, "ALLOW")
-            else:
-                print(f"Error: No response received for {domain}")
-
-        except Exception as e:
-            print(f"Error processing DNS request: {e}")
-
-    def start(self):
-        """Start the DNS forwarder."""
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_sock:
-            server_sock.bind((LISTEN_IP, LISTEN_PORT))
-            print(f"DNS Forwarder running on {LISTEN_IP}:{LISTEN_PORT}")
-
-            while True:
-                data, addr = server_sock.recvfrom(512)
-                threading.Thread(target=self.handle_request, args=(data, addr, server_sock)).start()
+        
+    def log(self, domain, qtype, action):
+        if not self.log_file:
+            return
+        with open(self.log_file, "a") as f:
+            # from chat, not sure if this is what he wants but it's a timestamp!!!!
+            # qtype is carried over correctly but domain might still be buggy
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{timestamp} {domain} {qtype} {action}\n")
 
 # Argument Parsing
 def parse_arguments():
