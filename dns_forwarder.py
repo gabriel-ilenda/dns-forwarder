@@ -53,7 +53,7 @@ class DNSForwarder:
             return set()
 
     def handle_request(self, data, addr, sock):
-        """Process incoming DNS queries."""
+        
         try:
             query = dnslib.DNSRecord.parse(data)
             
@@ -61,9 +61,9 @@ class DNSForwarder:
             
             qtype = dnslib.QTYPE[query.q.qtype]
 
-            print(f"query = {query}")
-            print(f"domain = {domain}")
-            print(f"qtype = {qtype}")
+            # print(f"query = {query}")
+            # print(f"domain = {domain}")
+            # print(f"qtype = {qtype}")
 
             if domain in self.deny_list:
                 print(f"Error! The following domain is blocked: {domain}")
@@ -98,7 +98,8 @@ class DNSForwarder:
         return response.pack()
 
     def forward_udp_query(self, data):
-        """Forward the DNS query via UDP to the specified resolver."""
+
+        # basically professor's code except we send to port 53
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(data, (self.dst_ip, 53))
             response, _ = sock.recvfrom(1024)
@@ -135,24 +136,34 @@ class DNSForwarder:
 
 # Argument Parsing
 def parse_arguments():
+
+
     parser = argparse.ArgumentParser(description="DoH-Capable DNS Forwarder")
-    parser.add_argument("-d", "--dst_ip", help="Destination DNS server IP (for UDP forwarding)")
+
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-d", help="Destination DNS server IP (for UDP forwarding)")
+    group.add_argument("--doh", action="store_true", help="Use the default upstream DoH server")
+    group.add_argument("--doh_server", help="Specify a custom DoH server")
+
+    # parser.add_argument("-d", "--dst_ip", help="Destination DNS server IP (for UDP forwarding)")
+    # parser.add_argument("--doh", action="store_true", help="Use the default upstream DoH server")
+    # parser.add_argument("--doh_server", help="Specify a custom DoH server")
     parser.add_argument("-f", "--deny_list_file", required=True, help="File containing domains to block")
     parser.add_argument("-l", "--log_file", help="Log file for recording queries")
-    parser.add_argument("--doh", action="store_true", help="Use the default upstream DoH server")
-    parser.add_argument("--doh_server", help="Specify a custom DoH server")
 
     args = parser.parse_args()
 
-    if not args.doh and not args.doh_server and not args.dst_ip:
-        parser.error("Either --doh, --doh_server, or -d must be specified.")
-
+    # if (not args.doh and not args.doh_server and not args.dst_ip):
+    #     parser.error("Either --doh, --doh_server, or -d must be specified.")
+    
+    
     return args
 
 if __name__ == "__main__":
     args = parse_arguments()
     forwarder = DNSForwarder(
-        dst_ip=args.dst_ip,
+        dst_ip=args.d,
         deny_list_file=args.deny_list_file,
         log_file=args.log_file,
         use_doh=args.doh or bool(args.doh_server),
