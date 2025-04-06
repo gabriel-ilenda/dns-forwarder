@@ -15,6 +15,7 @@ LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 5353       
 
 class DNSForwarder:
+
     def __init__(self, dst_ip=None, deny_list_file=None, log_file=None, use_doh=False, doh_server=None):
         self.dst_ip = dst_ip
         self.use_doh = use_doh
@@ -22,7 +23,7 @@ class DNSForwarder:
         self.log_file = log_file
         self.deny_list = self.block_domains(deny_list_file)
 
-    def start(self):
+    def run(self):
 
         # sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # while sock:
@@ -35,7 +36,7 @@ class DNSForwarder:
             # can only be stopped with ctrl+c???? 
             while True:
                 data, addr = server_sock.recvfrom(1024)
-                threading.Thread(target=self.handle_request, args=(data, addr, server_sock)).start()
+                threading.Thread(target=self.handle_request, args=(data, addr, server_sock)).run()
 
     def block_domains(self, file_path):
         blocked_domains = set()
@@ -93,13 +94,18 @@ class DNSForwarder:
         # we already nx response is thrown if we're in this method so we just copy output here 
         response = dnslib.DNSRecord(dnslib.DNSHeader(id=query.header.id, qr=1, aa=1, ra=1, rcode=3))
        
-        # chat again, it makes it look excatly like a normal dig output so
         response.add_question(query.q)
+
+        # no method for opt psuedosection so this manually adds it, don't really need it but whatever
+        for rr in query.ar:
+            if rr.rtype == dnslib.QTYPE.OPT:
+                response.add_ar(rr)
+
         return response.pack()
 
     def forward_udp_query(self, data):
 
-        # basically professor's code except we send to port 53
+        # basically professor's code, send to port 53
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(data, (self.dst_ip, 53))
             response, _ = sock.recvfrom(1024)
@@ -115,7 +121,9 @@ class DNSForwarder:
         # https://1.1.1.1/dns-query?dns=xwkBIAABAAAAAAABA3d3dwZnb29nbGUDY29tAAABAAEAACkE0AAAAAAADAAKAAjc-DuOI4Qjmw
         doh_url = f"https://{self.doh_server}/dns-query?dns={dns_query_base64}"
         headers = {"Accept": "application/dns-message"}
-        print(doh_url)
+        print(f"VERIFY THE ADDRESS IS https://1.1.1.1/dns-query?dns= OR https://user_server/dns-query?dns=")
+        print(f"{doh_url}\n")
+              
 
         try:
             response = requests.get(doh_url, headers=headers, timeout=5)
@@ -134,7 +142,7 @@ class DNSForwarder:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"{timestamp} {domain} {qtype} {action}\n")
 
-# Argument Parsing
+
 def parse_arguments():
 
 
@@ -169,4 +177,4 @@ if __name__ == "__main__":
         use_doh=args.doh or bool(args.doh_server),
         doh_server=args.doh_server
     )
-    forwarder.start()
+    forwarder.run()
